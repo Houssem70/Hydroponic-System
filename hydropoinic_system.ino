@@ -4,300 +4,214 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 
-// GPIO where the ldr is connected to
-#define LDRPin 23  
-// GPIO where the DS18B20 is connected to
-#define ventilateur 16
-// GPIO where the EC is connected to
-#define Ec  18
-// GPIO where the PH is connected to
-#define PH  32
-// GPIO where the Lampe is connected to
-#define lampe  19
-// GPIO where the water pump is connected to
-#define pompeEau  2
-// GPIO where the Nutriment pump is connected to
-#define pompeNutr  5
-// GPIO where the Ultrason water is connected to
-#define TRIG_PIN1 23 // ESP32 pin GIOP23 connected to Ultrasonic Sensor's TRIG pin
-#define ECHO_PIN1 22 // ESP32 pin GIOP22 connected to Ultrasonic Sensor's ECHO pin
-// GPIO where the Ultrason nutriment is connected to
-#define TRIG_PIN2 21 // ESP32 pin GIOP23 connected to Ultrasonic Sensor's TRIG pin
-#define ECHO_PIN2 14 // ESP32 pin GIOP22 connected to Ultrasonic Sensor's ECHO pin
+// GPIO Pin Definitions
+#define LDRPin 23         // GPIO where the LDR (light sensor) is connected
+#define ventilateur 16    // GPIO where the fan is connected
+#define Ec 18             // GPIO where the EC (electrical conductivity) sensor is connected
+#define PH 32             // GPIO where the pH sensor is connected
+#define lampe 19          // GPIO where the lamp is connected
+#define pompeEau 2        // GPIO where the water pump is connected
+#define pompeNutr 5       // GPIO where the nutrient pump is connected
+#define TRIG_PIN1 23      // GPIO for ultrasonic sensor (water level) TRIG pin
+#define ECHO_PIN1 22      // GPIO for ultrasonic sensor (water level) ECHO pin
+#define TRIG_PIN2 21      // GPIO for ultrasonic sensor (nutrient level) TRIG pin
+#define ECHO_PIN2 14      // GPIO for ultrasonic sensor (nutrient level) ECHO pin
 
-//BLE
+// BLE Definitions
 BLEServer* pServer = NULL;
 BLECharacteristic* pCharacteristic = NULL;
 bool deviceConnected = false;
 bool oldDeviceConnected = false;
-char buffer[40];
-//dht11
-DHT dht(2, DHT11);
-float temp = 0;
+char buffer[40];  // Buffer to store data for notification
+bool rqsNotify;   // Request to notify the BLE client
+unsigned long prvMillis; // Timestamp for notifications
+#define INTERVAL_READ 1000  // Interval for reading sensors
+int valNotify;
+#define MAX_VALNOTIFY 600   // Maximum value for notification
 
-//ultrason1
-float waterLevel,distance1;
-const float  distanceCapteurWaterLevel = 10.00;
-const float  ReservoirWaterLevel = 20.00;
+// DHT Sensor for temperature and humidity
+DHT dht(2, DHT11);  // DHT11 sensor on GPIO 2
+float temp = 0;      // Variable to store temperature
 
-//ultrason2
-float NutrimentLevel,distance2;
-const float  distanceCapteurNutrimentrLevel = 10.00;
-const float  ReservoirNutrimentLevel = 20.00;
+// Ultrasonic sensor for water level
+float waterLevel, distance1;
+const float distanceCapteurWaterLevel = 10.00;  // Distance threshold for water level sensor
+const float ReservoirWaterLevel = 20.00;        // Maximum water level in the reservoir
 
+// Ultrasonic sensor for nutrient level
+float NutrimentLevel, distance2;
+const float distanceCapteurNutrimentrLevel = 10.00;  // Distance threshold for nutrient level sensor
+const float ReservoirNutrimentLevel = 20.00;         // Maximum nutrient level in the reservoir
+
+// Light sensor value
 float light;
 
+// Variables for pH, EC, and water temperature
+float phValue;        // pH value (do not change)
+float ecValue;        // EC value (do not change)
+float TempdeauValue;  // Water temperature value (do not change)
 
-float phValue;// do not change
-float ecValue;// do not change
-float TempdeauValue;// do not change
-
-
-// function to calculate water level
-
-float getWaterLevelValue(){
+// Function to calculate water level using ultrasonic sensor
+float getWaterLevelValue() {
   float duration_us, distance_cm;
-  // generate 10-microsecond pulse to TRIG pin
-  digitalWrite(TRIG_PIN1, HIGH);
+  digitalWrite(TRIG_PIN1, HIGH);  // Send pulse to TRIG pin
   delayMicroseconds(10);
-  digitalWrite(TRIG_PIN1, LOW);
-
-  // measure duration of pulse from ECHO pin
-  duration_us = pulseIn(ECHO_PIN1, HIGH);
-
-  // calculate the distance
-  distance_cm = 0.017 * duration_us;
-
-  return distance_cm;
-
+  digitalWrite(TRIG_PIN1, LOW);   // End pulse
+  
+  duration_us = pulseIn(ECHO_PIN1, HIGH);  // Measure pulse duration on ECHO pin
+  distance_cm = 0.017 * duration_us;      // Calculate distance in cm
+  return distance_cm;  // Return distance in cm
 }
 
-// function to calculate nutriment level
-
-float getNutrimentLevelValue(){
+// Function to calculate nutrient level using ultrasonic sensor
+float getNutrimentLevelValue() {
   float duration_us, distance_cm;
-  // generate 10-microsecond pulse to TRIG pin
-  digitalWrite(TRIG_PIN2, HIGH);
+  digitalWrite(TRIG_PIN2, HIGH);  // Send pulse to TRIG pin
   delayMicroseconds(10);
-  digitalWrite(TRIG_PIN2, LOW);
-
-  // measure duration of pulse from ECHO pin
-  duration_us = pulseIn(ECHO_PIN2, HIGH);
-
-  // calculate the distance
-  distance_cm = 0.017 * duration_us;
-
-  return distance_cm;
-
+  digitalWrite(TRIG_PIN2, LOW);   // End pulse
+  
+  duration_us = pulseIn(ECHO_PIN2, HIGH);  // Measure pulse duration on ECHO pin
+  distance_cm = 0.017 * duration_us;      // Calculate distance in cm
+  return distance_cm;  // Return distance in cm
 }
 
+#define SERVICE_UUID           "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"  // UART service UUID for BLE
+#define CHARACTERISTIC_UUID_RX "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"  // Characteristic UUID for RX
+#define CHARACTERISTIC_UUID    "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"  // Characteristic UUID for TX
+bool rqsNotify;  // Flag for notification request
+unsigned long prvMillis;  // Timestamp for the last notification
+#define INTERVAL_READ 1000  // Interval for reading sensor values
 
-#define SERVICE_UUID           "6E400001-B5A3-F393-E0A9-E50E24DCCA9E" // UART service UUID
-#define CHARACTERISTIC_UUID_RX "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
-#define CHARACTERISTIC_UUID "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
-bool rqsNotify;
-unsigned long prvMillis;
-#define INTERVAL_READ 1000
-int valNotify;
-#define MAX_VALNOTIFY 600
-
-int ain = 0;
-
-//class for callback ble
+// Class for BLE server callbacks
 class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
-      deviceConnected = true;
-
-      rqsNotify = false;
-      prvMillis = millis();
+      deviceConnected = true;  // Set the flag when the device is connected
+      rqsNotify = false;       // Reset notification request
+      prvMillis = millis();    // Set the timestamp for notifications
       Serial.println("Device connected");
     };
 
     void onDisconnect(BLEServer* pServer) {
-      deviceConnected = false;
-      rqsNotify = false;
+      deviceConnected = false; // Set the flag when the device is disconnected
+      rqsNotify = false;       // Reset notification request
       Serial.println("Device disconnected");
     }
 };
 
-void prcRead(){
-  if(deviceConnected){
+// Function to process reading intervals and request notifications
+void prcRead() {
+  if(deviceConnected) {
     unsigned long curMillis = millis();
-    if((curMillis-prvMillis) >= INTERVAL_READ){
-           
-      /*  int  g_Humidity = 565;//g_dht.readHumidity();
-        Serial.print("Humidity: ");
-        Serial.print(g_Humidity);
-        Serial.println(" %");
-        Serial.println(" ");
-    
-     // valNotify = map(g_Humidity, 0, 4096, 0, 255);
-     // Serial.println(valNotify);
-      */
-      rqsNotify = true;
-      prvMillis = curMillis;
+    if((curMillis - prvMillis) >= INTERVAL_READ) {
+      rqsNotify = true;       // Set request for notification
+      prvMillis = curMillis;  // Update the timestamp
     }
   }
-  
 }
 
-
-//////////////////////////////////void stup ()////////////////////////////////////////////////////////
+// Setup function to initialize everything
 void setup() {
-Serial.begin(9600);
-pinMode(ventilateur,OUTPUT);
-pinMode(TRIG_PIN1, OUTPUT);
-pinMode(ECHO_PIN1, INPUT);
-pinMode(TRIG_PIN2, OUTPUT);
-pinMode(ECHO_PIN2, INPUT);
-pinMode(LDRPin, INPUT);
-pinMode(lampe, OUTPUT);
-pinMode(pompeEau, OUTPUT);
-pinMode(pompeNutr, OUTPUT);
-dht.begin();
-digitalWrite(pompeNutr,LOW);
-digitalWrite(pompeEau,LOW);
+  Serial.begin(9600); // Initialize serial communication
+  pinMode(ventilateur, OUTPUT);  // Set fan pin as output
+  pinMode(TRIG_PIN1, OUTPUT);    // Set ultrasonic sensor TRIG pin for water level as output
+  pinMode(ECHO_PIN1, INPUT);     // Set ultrasonic sensor ECHO pin for water level as input
+  pinMode(TRIG_PIN2, OUTPUT);    // Set ultrasonic sensor TRIG pin for nutrient level as output
+  pinMode(ECHO_PIN2, INPUT);     // Set ultrasonic sensor ECHO pin for nutrient level as input
+  pinMode(LDRPin, INPUT);        // Set LDR pin as input
+  pinMode(lampe, OUTPUT);        // Set lamp pin as output
+  pinMode(pompeEau, OUTPUT);     // Set water pump pin as output
+  pinMode(pompeNutr, OUTPUT);    // Set nutrient pump pin as output
+  dht.begin();                  // Initialize the DHT sensor
+  digitalWrite(pompeNutr, LOW); // Turn off nutrient pump initially
+  digitalWrite(pompeEau, LOW);  // Turn off water pump initially
 
-BLEDevice::init("ESP32");
+  // Initialize BLE
+  BLEDevice::init("ESP32");
 
-  // Create the BLE Server
+  // Create BLE server
   pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
 
-  // Create the BLE Service
+  // Create BLE service and characteristic
   BLEService *pService = pServer->createService(SERVICE_UUID);
-
-  // Create a BLE Characteristic
   pCharacteristic = pService->createCharacteristic(
-                      CHARACTERISTIC_UUID,
-                      BLECharacteristic::PROPERTY_READ   |
-                      BLECharacteristic::PROPERTY_WRITE  |
-                      BLECharacteristic::PROPERTY_NOTIFY |
-                      BLECharacteristic::PROPERTY_INDICATE
-                    );
+                        CHARACTERISTIC_UUID,
+                        BLECharacteristic::PROPERTY_READ   |
+                        BLECharacteristic::PROPERTY_WRITE  |
+                        BLECharacteristic::PROPERTY_NOTIFY |
+                        BLECharacteristic::PROPERTY_INDICATE
+                      );
+  pCharacteristic->addDescriptor(new BLE2902());  // Add BLE descriptor
 
-  // Create a BLE Descriptor
-  pCharacteristic->addDescriptor(new BLE2902());
-
-  // Start the service
+  // Start the BLE service and advertising
   pService->start();
-
-  // Start advertising
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
   pAdvertising->setScanResponse(false);
-  pAdvertising->setMinPreferred(0x0); // set value to 0x00 to not advertise this parameter
+  pAdvertising->setMinPreferred(0x0); // Set to 0x00 to not advertise this parameter
   BLEDevice::startAdvertising();
-  Serial.println("Waiting a client connection to notify...");
+  Serial.println("Waiting for client connection to notify...");
 }
 
-
-
-
-///////////////////////////////void loop()////////////////////////////////////////////////////////////
+// Main loop function
 void loop() {
-  
- // read the input of ec from potenttiometer:
-  ecValue = ((analogRead(Ec))*4.0)/4095.0;
-  Serial.print("ecValue:");
+  // Read EC sensor value
+  ecValue = ((analogRead(Ec)) * 4.0) / 4095.0;
+  Serial.print("ecValue: ");
   Serial.print(ecValue);
-  Serial.println("mS/cm");
-  
-  //pompe de nutriment
-  if (ecValue < 1.5 )
-  {
-   digitalWrite(pompeNutr,HIGH);
-   delay(500);  
-   digitalWrite(pompeNutr,LOW);
+  Serial.println(" mS/cm");
+
+  // Nutrient pump control based on EC value
+  if (ecValue < 1.5) {
+    digitalWrite(pompeNutr, HIGH); // Turn on nutrient pump
+    delay(500);  
+    digitalWrite(pompeNutr, LOW);  // Turn off nutrient pump
   }
   
-  //read the input of ph from potenttiometer:
-  phValue = ((analogRead(PH))*8.0)/4095.0;
-  Serial.print("phValue:");
+  // Read pH sensor value
+  phValue = ((analogRead(PH)) * 8.0) / 4095.0;
+  Serial.print("phValue: ");
   Serial.println(phValue);
 
-  
-  //pompe d'eau 
-  if (phValue < 6.0 )
-  {
-    digitalWrite(pompeEau,HIGH);
+  // Water pump control based on pH value
+  if (phValue < 6.0) {
+    digitalWrite(pompeEau, HIGH); // Turn on water pump
     delay(500);  
-    digitalWrite(pompeEau,LOW); 
+    digitalWrite(pompeEau, LOW);  // Turn off water pump
   }
-  
-// read water level from Ultrason
-distance1 = getWaterLevelValue();
-waterLevel = ((ReservoirWaterLevel-(distance1 - distanceCapteurWaterLevel))*100)/ReservoirWaterLevel;
-Serial.print("WaterLevel: ");
-Serial.print(waterLevel);
-Serial.println("%");
 
+  // Read water level using ultrasonic sensor
+  distance1 = getWaterLevelValue();
+  waterLevel = ((ReservoirWaterLevel - (distance1 - distanceCapteurWaterLevel)) * 100) / ReservoirWaterLevel;
+  Serial.print("WaterLevel: ");
+  Serial.print(waterLevel);
+  Serial.println("%");
 
-// read nutriment level from Ultrason
-distance2 = getNutrimentLevelValue();
-NutrimentLevel = ((ReservoirWaterLevel-(distance2 - distanceCapteurNutrimentrLevel))*100)/ReservoirNutrimentLevel;
-Serial.print("NutrimentrLevel: ");
-Serial.print(NutrimentLevel);
-Serial.println("%");
+  // Read nutrient level using ultrasonic sensor
+  distance2 = getNutrimentLevelValue();
+  NutrimentLevel = ((ReservoirWaterLevel - (distance2 - distanceCapteurNutrimentrLevel)) * 100) / ReservoirNutrimentLevel;
+  Serial.print("NutrimentLevel: ");
+  Serial.print(NutrimentLevel);
+  Serial.println("%");
 
+  // Read light level (LDR sensor)
+  light = analogRead(LDRPin);
+  Serial.print("Light: ");
+  Serial.println(light);
 
-//read luminosity from ldr 
-light = analogRead(LDRPin);
-Serial.print(light);
-Serial.println("LUX");
-
-if( light< 200 )
-{
-  digitalWrite(lampe,HIGH);
-}
-else {
-  digitalWrite(lampe,LOW);
-}
- 
-
-  //Temperature d'air
+  // Read temperature and humidity from DHT sensor
   temp = dht.readTemperature();
-  Serial.println();
-  Serial.print("Température d'air: ");
+  Serial.print("Temperature: ");
   Serial.print(temp);
-  Serial.print("°C");
-  
- //ventiatur
- if(temp>28.00){
-  digitalWrite(ventilateur,HIGH);
+  Serial.println(" °C");
+
+  // Send sensor data to BLE
+  if (rqsNotify) {
+    snprintf(buffer, sizeof(buffer), "Temp: %.2f, Water: %.2f%%, Nutrient: %.2f%%, EC: %.2f, pH: %.2f", temp, waterLevel, NutrimentLevel, ecValue, phValue);
+    pCharacteristic->setValue(buffer);  // Set the value of the characteristic
+    pCharacteristic->notify();          // Notify the connected client with the new data
+    rqsNotify = false;                 // Reset the request flag
   }
- else {
-digitalWrite(ventilateur,LOW);
-  }
-  
 
-sprintf(buffer, "température %f, luminosité %f, EC %f ,PH %f, Niveau d'eau %f, Niveau de nutriments %f", temp, light, ecValue, phValue, waterLevel, NutrimentLevel);
-
-// notify changed value
-    if (deviceConnected) {
-        if(rqsNotify){
-          rqsNotify = false;
-          pCharacteristic->setValue((char[])&buffer, 40);
-          pCharacteristic->notify();
-          //value++;
-          
-        }
-    }
-    // disconnecting
-    if (!deviceConnected && oldDeviceConnected) {
-        delay(500); // give the bluetooth stack the chance to get things ready
-        pServer->startAdvertising(); // restart advertising
-        Serial.println("start advertising");
-        oldDeviceConnected = deviceConnected;
-    }
-    // connecting
-    if (deviceConnected && !oldDeviceConnected) {
-        // do stuff here on connecting
-        oldDeviceConnected = deviceConnected;
-    }
-
-    prcRead();
-    
-delay(5000);
-  
+  delay(1000);  // Delay before reading the sensors again
 }
